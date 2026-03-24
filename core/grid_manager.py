@@ -1,6 +1,6 @@
 """
 宫格管理器
-支持 9 宫格 (3x3) 和 16 宫格 (4x4)，支持自然语言方位描述
+支持 9 宫格 (3x3)，支持自然语言方位描述
 """
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
