@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "tdrpa-ui-scanner": {
+      "command": "D:\\projects\\wx-rpa\\.venv\\Scripts\\python.exe",
+      "args": [
+        "D:\\projects\\wx-rpa\\tdRPA-mcp\\mcp_server.py"
+      ],
+      "cwd": "D:\\projects\\wx-rpa\\tdRPA-mcp",
+      "disabled": false,
+      "autoApprove": [],
+      "environment": {
+        "PYTHONPATH": "D:\\projects\\wx-rpa\\tdRPA-mcp"
+      }
+    }
+  }
+}

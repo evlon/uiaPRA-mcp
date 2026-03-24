@@ -1,0 +1,806 @@
+"""
+MCP 工具：宫格拾取器
+"""
+from mcp.server.fastmcp import FastMCP
+from typing import Optional, Dict, Any, List
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
+    """注册宫格拾取器工具"""
+    
+    @mcp.tool()
+    async def set_focus_window(
+        process_name: str = None,
+        window_title: str = None
+    ) -> Dict[str, Any]:
+        """
+        设置目标扫描窗口
+        
+        指定要扫描的进程或窗口，后续的元素查找将限定在此窗口范围内。
+        
+        Args:
+            process_name: 进程名，如 "notepad.exe", "WeChat.exe"
+            window_title: 窗口标题，支持模糊匹配
+        
+        Returns:
+            设置结果和窗口信息
+        
+        Example:
+            >>> set_focus_window(process_name="notepad.exe")
+            {
+                "success": true,
+                "window": {
+                    "process_name": "notepad.exe",
+                    "title": "无标题 - 记事本",
+                    "rect": [100, 100, 500, 400]
+                },
+                "grid_info": {
+                    "rows": 4,
+                    "cols": 4,
+                    "total_grids": 16
+                }
+            }
+        """
+        from core.uia_region_scanner import UIARegionScanner
+        from core.grid_manager import GridManager
+        
+        try:
+            # 创建新的扫描器
+            scanner = UIARegionScanner(
+                process_name=process_name,
+                window_title=window_title,
+                timeout=5.0
+            )
+            
+            # 更新引用
+            scanner_ref['scanner'] = scanner
+            
+            # 创建宫格管理器（默认 9 宫格）
+            window_rect = scanner.get_window_rect()
+            grid_manager = GridManager(window_rect, rows=3, cols=3)  # 改为 9 宫格
+            scanner_ref['grid_manager'] = grid_manager
+            
+            # 获取窗口信息
+            try:
+                rect = scanner.root_element.BoundingRectangle
+                window_info = {
+                    "process_name": process_name or "N/A",
+                    "title": scanner.root_element.Name if hasattr(scanner.root_element, 'Name') else '',
+                    "rect": [rect.left, rect.top, rect.right, rect.bottom]
+                }
+            except:
+                window_info = {
+                    "process_name": process_name or "N/A",
+                    "title": "Unknown",
+                    "rect": [0, 0, 0, 0]
+                }
+            
+            return {
+                "success": True,
+                "window": window_info,
+                "grid_info": {
+                    "rows": 3,  # 9 宫格
+                    "cols": 3,
+                    "total_grids": 9,
+                    "window_size": [
+                        window_info["rect"][2] - window_info["rect"][0],
+                        window_info["rect"][3] - window_info["rect"][1]
+                    ]
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error setting focus window: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def pick_grid_element(
+        grid_id: int,
+        element_index: int = 0,
+        refresh: bool = True
+    ) -> Dict[str, Any]:
+        """
+        拾取指定宫格内的元素
+        
+        Args:
+            grid_id: 宫格编号 (0-15)
+            element_index: 元素索引 (该宫格内第几个元素)
+            refresh: 是否重新扫描
+        
+        Returns:
+            拾取的元素信息
+        
+        Example:
+            >>> pick_grid_element(grid_id=5, element_index=0)
+            {
+                "success": true,
+                "element": {
+                    "name": "发送",
+                    "control_type": "Button",
+                    "grid_id": 5,
+                    "element_index": 0
+                }
+            }
+        """
+        scanner = scanner_ref.get('scanner')
+        grid_manager = scanner_ref.get('grid_manager')
+        
+        if not scanner or not grid_manager:
+            return {
+                "success": False,
+                "error": "Scanner not initialized. Call set_focus_window first."
+            }
+        
+        try:
+            # 获取宫格
+            grid = grid_manager.get_grid_by_id(grid_id)
+            grid_rect = grid.to_tuple()
+            
+            # 扫描宫格
+            if refresh:
+                elements = scanner.scan_grid(grid_rect)
+            else:
+                # 使用缓存
+                elements = scanner_ref.get('cache', {}).get(grid_id, [])
+            
+            if not elements:
+                return {
+                    "success": False,
+                    "grid_id": grid_id,
+                    "message": f"No elements found in grid {grid_id}"
+                }
+            
+            if element_index >= len(elements):
+                return {
+                    "success": False,
+                    "grid_id": grid_id,
+                    "message": f"Element index {element_index} out of range (0-{len(elements)-1})"
+                }
+            
+            elem = elements[element_index]
+            
+            return {
+                "success": True,
+                "element": {
+                    "name": elem.name,
+                    "control_type": elem.control_type,
+                    "automation_id": elem.automation_id,
+                    "class_name": elem.class_name,
+                    "bounding_rect": list(elem.bounding_rect),
+                    "grid_id": grid_id,
+                    "element_index": element_index
+                },
+                "grid_rect": list(grid_rect),
+                "total_elements_in_grid": len(elements)
+            }
+        
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        except Exception as e:
+            logger.error(f"Error picking grid element: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def get_ui_tree_data(
+        max_depth: int = 15,
+        include_raw_elements: bool = False
+    ) -> Dict[str, Any]:
+        """
+        获取完整的 UI 树数据（按网格分组，不做过滤）
+        
+        这是最灵活的 API，返回所有 UI 元素及其分组信息，让 LLM 来决定如何筛选。
+        
+        Args:
+            max_depth: 最大搜索深度，默认 15
+            include_raw_elements: 是否包含所有元素的详细信息（可能很大），默认 False
+        
+        Returns:
+            UI 树数据结构：
+            {
+                "by_grid": {
+                    "左上": [element1, element2, ...],
+                    "左中": [...],
+                    ...
+                },
+                "by_control_type": {
+                    "ButtonControl": 5,
+                    "TextControl": 10,
+                    ...
+                },
+                "statistics": {
+                    "total_elements": 77,
+                    "by_grid_position": {"左中": 15, "左上": 8, ...},
+                    "by_control_type": {"ButtonControl": 5, ...}
+                }
+            }
+        
+        Example:
+            >>> ui_data = get_ui_tree_data()
+            >>> left_middle_elements = ui_data['by_grid']['左中']
+            >>> # 然后 LLM 可以根据需要筛选这些元素
+        """
+        scanner = scanner_ref.get('scanner')
+        grid_manager = scanner_ref.get('grid_manager')
+        
+        if not scanner or not grid_manager:
+            return {
+                "success": False,
+                "error": "Scanner not initialized. Call set_focus_window first."
+            }
+        
+        try:
+            from core.ui_tree_scanner import UITreeScanner
+            
+            ui_scanner = UITreeScanner(scanner.root_element, grid_manager)
+            ui_scanner.scan_full_tree(max_depth=max_depth)
+            
+            ui_data = ui_scanner.get_grouped_ui_tree()
+            
+            # 如果不包含原始元素，移除详细列表以减小响应大小
+            if not include_raw_elements:
+                ui_data.pop('all_elements', None)
+            
+            return {
+                "success": True,
+                "ui_tree": ui_data,
+                "message": f"Scanned {ui_data['statistics']['total_elements']} elements"
+            }
+        
+        except Exception as e:
+            logger.error(f"Error getting UI tree data: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def filter_ui_elements(
+        grid_positions: Optional[List[str]] = None,
+        name_contains: Optional[str] = None,
+        control_types: Optional[List[str]] = None,
+        min_width: int = 0,
+        min_height: int = 0,
+        sort_by: str = 'name'
+    ) -> Dict[str, Any]:
+        """
+        语义化过滤 UI 元素
+        
+        根据自然语言描述的条件筛选元素，支持多种过滤条件组合。
+        
+        Args:
+            grid_positions: 网格位置列表，如 ['左上', '左中', '左下']
+            name_contains: 名称包含的字符串，如 '搜'
+            control_types: 控件类型列表，如 ['ButtonControl', 'TextControl']
+            min_width: 最小宽度（像素）
+            min_height: 最小高度（像素）
+            sort_by: 排序方式 ('name', 'grid_id', 'size')
+        
+        Returns:
+            过滤后的元素列表和统计信息
+        
+        Example:
+            >>> filter_ui_elements(
+            ...     grid_positions=['左中', '左上'],
+            ...     name_contains='搜',
+            ...     control_types=['ButtonControl']
+            ... )
+        """
+        scanner = scanner_ref.get('scanner')
+        grid_manager = scanner_ref.get('grid_manager')
+        
+        if not scanner or not grid_manager:
+            return {
+                "success": False,
+                "error": "Scanner not initialized. Call set_focus_window first."
+            }
+        
+        try:
+            from core.ui_tree_scanner import UITreeScanner
+            from core.semantic_filter import SemanticFilter, SemanticQuery
+            
+            # 扫描 UI 树
+            ui_scanner = UITreeScanner(scanner.root_element, grid_manager)
+            ui_scanner.scan_full_tree(max_depth=15)
+            all_elements = ui_scanner.get_sorted_elements(deduplicate=False)
+            
+            # 创建语义化查询
+            query = SemanticQuery(
+                grid_positions=grid_positions,
+                name_contains=name_contains,
+                control_types=control_types,
+                min_width=min_width,
+                min_height=min_height,
+                priority_field=sort_by
+            )
+            
+            # 应用过滤
+            semantic_filter = SemanticFilter(all_elements)
+            filtered_results = semantic_filter.apply_query(query)
+            
+            # 构建结果
+            results = [
+                {
+                    'name': elem.name,
+                    'control_type': elem.control_type,
+                    'automation_id': elem.automation_id,
+                    'bounding_rect': list(elem.bounding_rect),
+                    'grid_id': elem.grid_id,
+                    'grid_position': elem.grid_position,
+                    'center_point': list(elem.center_point) if elem.center_point else None,
+                }
+                for elem in filtered_results
+            ]
+            
+            stats = semantic_filter.get_statistics()
+            
+            return {
+                "success": True,
+                "query": {
+                    "grid_positions": grid_positions,
+                    "name_contains": name_contains,
+                    "control_types": control_types,
+                    "min_size": f"{min_width}x{min_height}",
+                    "sort_by": sort_by
+                },
+                "result_count": len(results),
+                "statistics": stats,
+                "elements": results[:50]  # 限制返回数量
+            }
+        
+        except Exception as e:
+            logger.error(f"Error filtering UI elements: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def build_selector_for_element(
+        element_index: int,
+        grid_position: Optional[str] = None,
+        element_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        为指定元素构建 tdSelector 字符串
+        
+        Args:
+            element_index: 元素索引（在过滤后的列表中）
+            grid_position: 可选，指定网格位置来定位元素
+            element_name: 可选，指定元素名称来定位元素
+        
+        Returns:
+            构建好的 selector 字符串
+        
+        Example:
+            >>> # 先过滤出候选元素
+            >>> filtered = filter_ui_elements(grid_positions=['左中'], name_contains='搜')
+            >>> # 然后为第 0 个元素构建 selector
+            >>> selector_info = build_selector_for_element(element_index=0)
+        """
+        scanner = scanner_ref.get('scanner')
+        grid_manager = scanner_ref.get('grid_manager')
+        
+        if not scanner or not grid_manager:
+            return {
+                "success": False,
+                "error": "Scanner not initialized"
+            }
+        
+        try:
+            from core.ui_tree_scanner import UITreeScanner
+            from core.semantic_filter import SelectorBuilder
+            
+            # 扫描 UI 树
+            ui_scanner = UITreeScanner(scanner.root_element, grid_manager)
+            ui_scanner.scan_full_tree(max_depth=15)
+            all_elements = ui_scanner.get_sorted_elements(deduplicate=False)
+            
+            # 定位元素
+            target_elem = None
+            
+            if grid_position is not None and element_name is not None:
+                # 通过网格位置和名称定位
+                for elem in all_elements:
+                    if elem.grid_position == grid_position and elem.name == element_name:
+                        target_elem = elem
+                        break
+            else:
+                # 通过索引定位
+                if 0 <= element_index < len(all_elements):
+                    target_elem = all_elements[element_index]
+            
+            if not target_elem:
+                return {
+                    "success": False,
+                    "error": "Element not found with given criteria"
+                }
+            
+            # 构建 selector
+            selector_str = SelectorBuilder.from_element(target_elem)
+            
+            # 获取窗口标题
+            window_title = getattr(scanner.root_element, 'Name', '')
+            full_selector = SelectorBuilder.from_semantic_match(target_elem, window_title)
+            
+            return {
+                "success": True,
+                "element": {
+                    "name": target_elem.name,
+                    "control_type": target_elem.control_type,
+                    "grid_position": target_elem.grid_position,
+                    "bounding_rect": list(target_elem.bounding_rect)
+                },
+                "selector": {
+                    "simple": selector_str,
+                    "full_with_window": full_selector
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error building selector: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def scan_region(
+        region: str = None,
+        grid_id: int = None,
+        search_depth: int = 2,
+        use_ui_tree: bool = True  # 新参数：使用 UI 树扫描
+    ) -> Dict[str, Any]:
+        """
+        扫描指定区域的 UI 元素
+        
+        支持自然语言方位描述（左上、中间、右下等）或宫格编号。
+        默认使用 9 宫格布局。
+        
+        Args:
+            region: 自然语言方位描述，如 '左上'、'中间'、'右下'、'上面'、'左侧' 等
+            grid_id: 宫格编号 (0-8)，与 region 二选一
+            search_depth: 搜索深度，默认 2
+            use_ui_tree: 是否使用 UI 树扫描（推荐），默认 True
+        
+        Returns:
+            区域内的元素列表和统计信息
+        
+        Example:
+            >>> scan_region(region="左上")
+            {
+                "region": "左上",
+                "grid_id": 0,
+                "element_count": 5,
+                "elements": [
+                    {"name": "微信", "control_type": "ButtonControl"},
+                    ...
+                ]
+            }
+            
+            >>> scan_region(grid_id=4)  # 中间
+            {
+                "grid_id": 4,
+                "position_name": "中间",
+                "element_count": 8,
+                "elements": [...]
+            }
+        """
+        from core.grid_manager import GridManager
+        from core.ui_tree_scanner import UITreeScanner
+        
+        scanner = scanner_ref.get('scanner')
+        grid_manager = scanner_ref.get('grid_manager')
+        
+        if not scanner or not grid_manager:
+            return {
+                "success": False,
+                "error": "Scanner not initialized. Call set_focus_window first."
+            }
+        
+        try:
+            # 确定要扫描的宫格
+            target_grids = []
+            
+            if grid_id is not None:
+                # 使用宫格编号
+                grid = grid_manager.get_grid_by_id(grid_id)
+                target_grids.append(grid)
+            elif region:
+                # 使用自然语言描述
+                # 先尝试精确匹配单个宫格
+                grid = grid_manager.get_grid_by_position_name(region)
+                if grid:
+                    target_grids.append(grid)
+                else:
+                    # 尝试区域匹配（可能返回多个宫格）
+                    target_grids = grid_manager.get_grids_by_region_description(region)
+                
+                if not target_grids:
+                    return {
+                        "success": False,
+                        "error": f"Unknown region: '{region}'. Use terms like 左上，中间，右下，上面，左侧 etc."
+                    }
+            else:
+                return {
+                    "success": False,
+                    "error": "Please specify either 'region' or 'grid_id'"
+                }
+            
+            # 扫描方法选择
+            if use_ui_tree:
+                # 新方法：UI 树扫描 + 宫格过滤
+                ui_scanner = UITreeScanner(scanner.root_element, grid_manager)
+                all_ui_elements = ui_scanner.scan_full_tree(max_depth=search_depth + 10)
+                
+                # 过滤出目标宫格的元素
+                target_grid_ids = {g.id for g in target_grids}
+                filtered_elements = [
+                    e for e in all_ui_elements 
+                    if e.grid_id in target_grid_ids
+                ]
+                
+                # 去重
+                sorted_elements = ui_scanner.get_sorted_elements(deduplicate=True)
+                final_elements = [
+                    e for e in sorted_elements 
+                    if e.grid_id in target_grid_ids
+                ]
+                
+                # 转换为字典格式
+                element_dicts = [e.to_dict() for e in final_elements]
+                
+            else:
+                # 旧方法：scan_grid
+                all_elements = []
+                for grid in target_grids:
+                    elements = scanner.scan_grid(grid.to_tuple(), search_depth=search_depth)
+                    for elem in elements:
+                        elem_dict = elem.to_dict()
+                        elem_dict['grid_id'] = grid.id
+                        elem_dict['position_name'] = grid_manager.get_position_name_by_id(grid.id)
+                        all_elements.append(elem_dict)
+                
+                element_dicts = all_elements
+                final_elements = element_dicts
+            
+            # 构建返回结果
+            result = {
+                "success": True,
+                "region_query": region if region else f"grid_{grid_id}",
+                "scanned_grids": [
+                    {
+                        "id": g.id,
+                        "position_name": grid_manager.get_position_name_by_id(g.id)
+                    }
+                    for g in target_grids
+                ],
+                "element_count": len(element_dicts),
+                "search_depth": search_depth,
+                "use_ui_tree": use_ui_tree,
+                "elements": element_dicts[:30]  # 限制返回数量
+            }
+            
+            if len(element_dicts) > 30:
+                result["message"] = f"Showing first 30 of {len(element_dicts)} elements"
+            
+            return result
+        
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        except Exception as e:
+            logger.error(f"Error scanning region: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def highlight_element(
+        selector_string: str,
+        duration: float = 3.0,
+        color: str = 'red'
+    ) -> Dict[str, Any]:
+        """
+        在屏幕上高亮显示 UI 元素
+        
+        使用 tkinter 创建半透明覆盖层，在元素周围绘制彩色边框。
+        支持跟随元素移动（如果元素位置变化）。
+        
+        Args:
+            selector_string: tdSelector 语法字符串
+                示例："[{ 'wnd': [('Text', '微信')] }, { 'ctrl': [('Text', '搜一搜')] }]"
+            duration: 高亮持续时间（秒），默认 3 秒
+            color: 边框颜色，支持 'red', 'green', 'blue', 'yellow', 'orange'
+        
+        Returns:
+            高亮结果和元素位置信息
+        
+        Example:
+            >>> highlight_element(
+            ...     selector_string="[{ 'wnd': [('Text', '微信')] }, { 'ctrl': [('Text', '搜一搜')] }]",
+            ...     duration=5.0,
+            ...     color='red'
+            ... )
+            {
+                "success": true,
+                "element": {
+                    "name": "搜一搜",
+                    "bounding_rect": [16, 513, 91, 558],
+                    "center_point": [53, 535]
+                },
+                "highlight_info": {
+                    "duration": 5.0,
+                    "color": "red",
+                    "follow_mode": true
+                }
+            }
+        """
+        from core.screen_highlighter import highlight_element as highlight
+        
+        scanner = scanner_ref.get('scanner')
+        
+        if not scanner:
+            return {
+                "success": False,
+                "error": "Scanner not initialized"
+            }
+        
+        try:
+            # 查找元素
+            element = scanner.find_by_selector(selector_string, timeout=5.0)
+            
+            if not element:
+                return {
+                    "success": False,
+                    "error": "Element not found",
+                    "selector": selector_string
+                }
+            
+            # 获取位置
+            rect = element.BoundingRectangle
+            rect_tuple = (rect.left, rect.top, rect.right, rect.bottom)
+            center_x = (rect.left + rect.right) // 2
+            center_y = (rect.top + rect.bottom) // 2
+            
+            # 高亮元素
+            highlight(element, duration=duration, color=color, follow=True)
+            
+            return {
+                "success": True,
+                "element": {
+                    "name": getattr(element, 'Name', ''),
+                    "control_type": getattr(element, 'ControlTypeName', ''),
+                    "bounding_rect": list(rect_tuple),
+                    "center_point": [center_x, center_y]
+                },
+                "highlight_info": {
+                    "duration": duration,
+                    "color": color,
+                    "follow_mode": True
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error highlighting element: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "selector": selector_string
+            }
+    
+    @mcp.tool()
+    async def list_grids(
+        show_elements: bool = False
+    ) -> Dict[str, Any]:
+        """
+        列出所有宫格及其元素
+        
+        Args:
+            show_elements: 是否显示元素详情
+        
+        Returns:
+            所有宫格的信息
+        """
+        scanner = scanner_ref.get('scanner')
+        grid_manager = scanner_ref.get('grid_manager')
+        
+        if not scanner or not grid_manager:
+            return {
+                "error": "Scanner not initialized"
+            }
+        
+        try:
+            grids = grid_manager.get_all_grids()
+            result = {
+                "total_grids": len(grids),
+                "window_rect": list(scanner.get_window_rect()),
+                "grids": []
+            }
+            
+            for grid in grids:
+                grid_info = {
+                    "grid_id": grid.id,
+                    "rect": [grid.left, grid.top, grid.right, grid.bottom],
+                    "center": list(grid.center),
+                    "size": [grid.width, grid.height]
+                }
+                
+                if show_elements:
+                    elements = scanner.scan_grid(grid.to_tuple())
+                    grid_info["element_count"] = len(elements)
+                    grid_info["elements"] = [
+                        {
+                            "name": elem.name,
+                            "control_type": elem.control_type
+                        }
+                        for elem in elements[:10]  # 最多显示 10 个
+                    ]
+                
+                result["grids"].append(grid_info)
+            
+            return result
+        
+        except Exception as e:
+            logger.error(f"Error listing grids: {e}")
+            return {
+                "error": str(e)
+            }
+    
+    @mcp.tool()
+    async def set_focus_point(
+        x: int,
+        y: int
+    ) -> Dict[str, Any]:
+        """
+        设置焦点为指定坐标所在的宫格
+        
+        Args:
+            x: 屏幕 X 坐标
+            y: 屏幕 Y 坐标
+        
+        Returns:
+            设置的焦点宫格信息
+        """
+        scanner = scanner_ref.get('scanner')
+        
+        if not scanner:
+            return {
+                "error": "Scanner not initialized"
+            }
+        
+        try:
+            grid_manager = scanner_ref['grid_manager']
+            grid_id = scanner.set_focus_by_grid(grid_manager.get_grid_by_position(x, y).id)
+            grid = grid_manager.get_grid_by_id(grid_id)
+            
+            return {
+                "success": True,
+                "focus_grid_id": grid_id,
+                "point": [x, y],
+                "grid_rect": [grid.left, grid.top, grid.right, grid.bottom],
+                "grid_center": list(grid.center)
+            }
+        
+        except Exception as e:
+            logger.error(f"Error setting focus point: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    return set_focus_window, pick_grid_element, list_grids, set_focus_point

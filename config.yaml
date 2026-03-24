@@ -1,0 +1,16 @@
+# tdRPA-mcp 配置文件
+
+scanning:
+  grid_rows: 4          # 宫格行数
+  grid_cols: 4          # 宫格列数
+  cv_prefilter: true    # 是否启用 CV 预筛选
+  cv_threshold: 0.01    # CV 活跃度阈值
+  parallel_scan: true   # 是否并行扫描
+  
+performance:
+  cache_enabled: true   # 启用结果缓存
+  cache_ttl: 30         # 缓存存活时间 (秒)
+  
+target:
+  default_process: null  # 默认目标进程名
+  default_timeout: 5.0   # 默认超时 (秒)
