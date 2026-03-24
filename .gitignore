@@ -58,3 +58,12 @@ Thumbs.db
 *.bak
 *.tmp
 .cache/
+
+# Archive directory (not for Git)
+docs_archive/
+
+# Temporary scripts
+fix_*.py
+replace_*.py
+move_to_archive.py
+cleanup_docs.bat
