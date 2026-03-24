@@ -78,7 +78,7 @@ async def get_status() -> Dict[str, Any]:
                 "status": "ready",
                 "has_target": True,
                 "window_rect": list(window_rect),
-                "total_grids": 16,
+                "total_grids": 9,
                 "cache_size": len(scanner_state.get('cache', {}))
             }
         except:
