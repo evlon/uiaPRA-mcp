@@ -233,8 +233,6 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 ## 📞 联系方式
 
 - **GitHub**: https://github.com/evlon/uiaPRA-mcp
-- **Email**: thingswell@qq.com
-- **WeChat**: haijun-data
 
 ---
 
