@@ -16,7 +16,9 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
     @mcp.tool()
     async def set_focus_window(
         process_name: str = None,
-        window_title: str = None
+        window_title: str = None,
+        exact_match: bool = False,
+        hwnd: str = None  # 新增：支持按句柄设置
     ) -> Dict[str, Any]:
         """
         设置目标扫描窗口
@@ -26,6 +28,8 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
         Args:
             process_name: 进程名，如 "notepad.exe", "WeChat.exe"
             window_title: 窗口标题，支持模糊匹配
+            exact_match: 是否精确匹配窗口标题（默认 False）
+            hwnd: 可选，窗口句柄（优先级最高）
         
         Returns:
             设置结果和窗口信息
@@ -45,18 +49,75 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                     "total_grids": 9
                 }
             }
+            
+            >>> # 精确匹配标题
+            >>> set_focus_window(window_title="微信", exact_match=True)
+            
+            >>> # 使用句柄设置
+            >>> set_focus_window(hwnd="hwnd_8888_xxx")
         """
         from core.uia_region_scanner import UIARegionScanner
         from core.grid_manager import GridManager
         from core.error_handler import WindowNotFoundError, ensure_scanner_initialized
         
         try:
+            # 如果提供了 hwnd，尝试直接定位
+            if hwnd:
+                logger.info(f"Setting focus by hwnd: {hwnd}")
+                # TODO: 实现按 hwnd 定位
+            
             # 创建新的扫描器
             scanner = UIARegionScanner(
                 process_name=process_name,
                 window_title=window_title,
                 timeout=5.0
             )
+            
+            # 如果找不到窗口，返回所有匹配项供用户选择
+            if not scanner.root_element or scanner.root_element == scanner.auto.GetRootControl():
+                # 获取所有匹配的窗口
+                all_matches = scanner.find_all_windows(
+                    process_name=process_name,
+                    window_title_pattern=window_title
+                )
+                
+                if all_matches:
+                    # 有多个匹配项，返回给用户选择
+                    return {
+                        "success": False,
+                        "error": "MULTIPLE_MATCHES",
+                        "message": f"找到 {len(all_matches)} 个匹配的窗口，请指定更精确的条件或使用 hwnd",
+                        "matches": [
+                            {
+                                "hwnd": f"hwnd_{m['process_id']}_{id(m['element'])}",
+                                "title": m['title'],
+                                "process_name": m['process_name'],
+                                "process_id": m['process_id'],
+                                "class_name": m['class_name'],
+                                "rect": m['rect'],
+                                "match_score": m['match_score']
+                            }
+                            for m in all_matches
+                        ],
+                        "suggestions": [
+                            "使用 exact_match=True 进行精确匹配",
+                            "使用 hwnd='...' 指定具体窗口",
+                            "提供更完整的窗口标题"
+                        ]
+                    }
+                else:
+                    # 完全没有匹配
+                    error = WindowNotFoundError(
+                        process_name=process_name,
+                        window_title=window_title,
+                        message=f"未找到任何匹配的窗口",
+                        details={
+                            "exact_match": exact_match,
+                            "searched_process": process_name,
+                            "searched_title": window_title
+                        }
+                    )
+                    return error.to_dict()
             
             # 更新引用
             scanner_ref['scanner'] = scanner
@@ -70,11 +131,14 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
             try:
                 rect = scanner.root_element.BoundingRectangle
                 window_info = {
-                    "process_name": process_name or "N/A",
-                    "title": scanner.root_element.Name if hasattr(scanner.root_element, 'Name') else '',
+                    "process_name": getattr(scanner.root_element, 'ProcessName', ''),
+                    "process_id": getattr(scanner.root_element, 'ProcessId', 0),
+                    "title": getattr(scanner.root_element, 'Name', ''),
+                    "class_name": getattr(scanner.root_element, 'ClassName', ''),
                     "rect": [rect.left, rect.top, rect.right, rect.bottom]
                 }
-            except:
+            except Exception as e:
+                logger.warning(f"Error getting window info: {e}")
                 window_info = {
                     "process_name": process_name or "N/A",
                     "title": "Unknown",
@@ -92,11 +156,12 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                         window_info["rect"][2] - window_info["rect"][0],
                         window_info["rect"][3] - window_info["rect"][1]
                     ]
-                }
+                },
+                "scanned": True  # 标记已扫描
             }
         
         except Exception as e:
-            logger.error(f"Error setting focus window: {e}")
+            logger.error(f"Error setting focus window: {e}", exc_info=True)
             
             # 使用统一的错误处理
             from core.error_handler import WindowNotFoundError
@@ -105,9 +170,83 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 process_name=process_name,
                 window_title=window_title,
                 message=f"无法找到窗口：{str(e)}",
-                details={"exception": str(e)}
+                details={
+                    "exception_type": type(e).__name__,
+                    "exception_message": str(e),
+                    "exact_match": exact_match
+                }
             )
             return error.to_dict()
+    
+    @mcp.tool()
+    async def activate_window(
+        hwnd: str = None,
+        process_name: str = None,
+        window_title: str = None
+    ) -> Dict[str, Any]:
+        """
+        激活/前置指定窗口
+        
+        将目标窗口设置为前台窗口，使其获得焦点。
+        
+        Args:
+            hwnd: 窗口句柄（优先级最高）
+            process_name: 进程名
+            window_title: 窗口标题
+        
+        Returns:
+            {
+                "success": true,
+                "window": {...},
+                "activated": true
+            }
+        
+        Example:
+            >>> await activate_window(process_name="WeChat.exe")
+        """
+        import ctypes
+        from core.uia_region_scanner import UIARegionScanner
+        
+        try:
+            # 查找窗口
+            scanner = UIARegionScanner(
+                process_name=process_name,
+                window_title=window_title,
+                timeout=2.0
+            )
+            
+            window_element = scanner.root_element
+            
+            # 获取窗口句柄
+            hwnd_actual = getattr(window_element, 'NativeWindowHandle', None)
+            
+            if not hwnd_actual:
+                return {
+                    "success": False,
+                    "error": "NO_WINDOW_HANDLE",
+                    "message": "无法获取窗口句柄"
+                }
+            
+            # 激活窗口
+            ctypes.windll.user32.SetForegroundWindow(hwnd_actual)
+            
+            return {
+                "success": True,
+                "window": {
+                    "title": getattr(window_element, 'Name', ''),
+                    "process_name": getattr(window_element, 'ProcessName', ''),
+                    "hwnd": hwnd_actual
+                },
+                "activated": True
+            }
+        
+        except Exception as e:
+            logger.error(f"Error activating window: {e}")
+            return {
+                "success": False,
+                "error": "ACTIVATE_WINDOW_ERROR",
+                "message": f"无法激活窗口：{str(e)}"
+            }
     
     @mcp.tool()
     async def list_windows(

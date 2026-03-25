@@ -79,37 +79,167 @@ class UIARegionScanner:
             logger.info("Using Desktop as root element")
             return root
     
-    def _find_window(self, root) -> Optional[Any]:
-        """查找匹配的窗口"""
+    def _find_window(self, root, exact_match: bool = False) -> Optional[Any]:
+        """
+        查找匹配的窗口
+        
+        :param root: 根元素
+        :param exact_match: 是否精确匹配标题
+        :return: 匹配的窗口元素
+        """
+        matches = []  # 收集所有匹配项
+        
         try:
             children = root.GetChildren()
             for child in children:
                 try:
-                    # 检查进程名
+                    # 检查进程名（精确匹配）
                     if self.process_name:
                         try:
-                            proc_name = child.ProcessName
-                            if not proc_name or self.process_name.lower() not in proc_name.lower():
+                            proc_name = getattr(child, 'ProcessName', '')
+                            if not proc_name:
                                 continue
+                            # 精确匹配进程名
+                            if self.process_name.lower() != proc_name.lower():
+                                # 也尝试部分匹配作为备选
+                                if self.process_name.lower() not in proc_name.lower():
+                                    continue
                         except:
                             continue
                     
                     # 检查窗口标题
                     if self.window_title:
                         try:
-                            name = child.Name
-                            if not name or self.window_title.lower() not in name.lower():
+                            name = getattr(child, 'Name', '') or ''
+                            if not name:
                                 continue
+                            
+                            # 精确匹配 vs 模糊匹配
+                            if exact_match:
+                                if self.window_title.lower() != name.lower():
+                                    continue
+                            else:
+                                # 模糊匹配：标题包含搜索词
+                                if self.window_title.lower() not in name.lower():
+                                    continue
                         except:
                             continue
                     
-                    return child
-                except:
+                    # 添加到匹配列表
+                    match_info = {
+                        'element': child,
+                        'title': getattr(child, 'Name', ''),
+                        'process_name': getattr(child, 'ProcessName', ''),
+                        'score': self._calculate_match_score(child)
+                    }
+                    matches.append(match_info)
+                    
+                except Exception as e:
+                    logger.debug(f"Error processing child window: {e}")
                     continue
+            
+            # 返回最佳匹配
+            if matches:
+                # 按匹配分数排序
+                matches.sort(key=lambda m: m['score'], reverse=True)
+                logger.info(f"Found {len(matches)} matching windows, best match: {matches[0]['title']}")
+                return matches[0]['element']
+            
         except Exception as e:
             logger.error(f"Error finding window: {e}")
         
         return None
+    
+    def _calculate_match_score(self, element) -> float:
+        """计算匹配分数（用于排序）"""
+        score = 0.0
+        
+        # 进程名完全匹配 +10
+        if self.process_name:
+            proc_name = getattr(element, 'ProcessName', '')
+            if proc_name and self.process_name.lower() == proc_name.lower():
+                score += 10.0
+        
+        # 标题完全匹配 +5
+        if self.window_title:
+            name = getattr(element, 'Name', '') or ''
+            if name and self.window_title.lower() == name.lower():
+                score += 5.0
+            elif name and self.window_title.lower() in name.lower():
+                score += 2.0
+        
+        # 可见窗口 +3
+        try:
+            rect = element.BoundingRectangle
+            if rect.right > rect.left and rect.bottom > rect.top:
+                score += 3.0
+        except:
+            pass
+        
+        return score
+    
+    def find_all_windows(self, process_name: str = None, window_title_pattern: str = None) -> List[Dict[str, Any]]:
+        """
+        查找所有匹配的窗口（返回列表）
+        
+        :param process_name: 进程名过滤
+        :param window_title_pattern: 窗口标题正则模式
+        :return: 窗口信息列表
+        """
+        import re
+        from core.logger import get_logger
+        
+        logger_local = get_logger('tdrpa.scanner')
+        matches = []
+        
+        try:
+            root = self.auto.GetRootControl()
+            children = root.GetChildren()
+            
+            for child in children:
+                try:
+                    title = getattr(child, 'Name', '') or ''
+                    proc_name = getattr(child, 'ProcessName', '') or ''
+                    
+                    # 应用过滤器
+                    if process_name and process_name.lower() not in proc_name.lower():
+                        continue
+                    
+                    if window_title_pattern and not re.search(window_title_pattern, title, re.IGNORECASE):
+                        continue
+                    
+                    # 获取详细信息
+                    try:
+                        rect = child.BoundingRectangle
+                        rect_tuple = (rect.left, rect.top, rect.right, rect.bottom)
+                    except:
+                        rect_tuple = (0, 0, 0, 0)
+                    
+                    window_info = {
+                        'element': child,
+                        'title': title,
+                        'process_name': proc_name,
+                        'process_id': getattr(child, 'ProcessId', 0),
+                        'class_name': getattr(child, 'ClassName', ''),
+                        'rect': list(rect_tuple),
+                        'is_visible': rect_tuple[2] > rect_tuple[0] and rect_tuple[3] > rect_tuple[1],
+                        'match_score': self._calculate_match_score(child)
+                    }
+                    
+                    matches.append(window_info)
+                    
+                except Exception as e:
+                    logger_local.debug(f"Error processing window: {e}")
+                    continue
+            
+            # 按匹配分数排序
+            matches.sort(key=lambda m: m['match_score'], reverse=True)
+            logger_local.info(f"Found {len(matches)} windows")
+            
+        except Exception as e:
+            logger_local.error(f"Error finding all windows: {e}")
+        
+        return matches
     
     def _element_in_region(self, element, region_rect: tuple) -> bool:
         """检查元素是否在区域内 (基于中心点)"""
@@ -348,3 +478,61 @@ class UIARegionScanner:
         except Exception as e:
             logger.error(f"Error getting window rect: {e}")
             return (0, 0, 0, 0)
+    
+    # ========================================================================
+    # 新增方法：支持 FocusDiffusionScanner 接口
+    # ========================================================================
+    
+    def set_focus_by_grid(self, grid_id: int) -> int:
+        """
+        设置焦点宫格（兼容 FocusDiffusionScanner 接口）
+        
+        :param grid_id: 宫格 ID
+        :return: 设置的宫格 ID
+        """
+        # UIARegionScanner 不需要实际设置焦点，只是兼容接口
+        logger.debug(f"set_focus_by_grid called with grid_id={grid_id}")
+        return grid_id
+    
+    def scan_focus_area(self, layers: int = 1) -> Dict[int, List[ElementInfo]]:
+        """
+        扫描焦点区域（兼容 FocusDiffusionScanner 接口）
+        
+        :param layers: 扫描层数（当前实现返回所有区域）
+        :return: {grid_id: elements}
+        """
+        # 这是一个简化实现，返回空字典表示使用默认扫描
+        logger.debug(f"scan_focus_area called with layers={layers}")
+        return {}
+    
+    def get_status(self) -> Dict[str, Any]:
+        """
+        获取扫描器状态信息
+        
+        :return: 状态字典
+        """
+        try:
+            status = {
+                "initialized": True,
+                "root_element_type": type(self.root_element).__name__,
+                "process_name": self.process_name,
+                "window_title": self.window_title,
+                "timeout": self.timeout
+            }
+            
+            # 尝试获取窗口信息
+            try:
+                status["window_name"] = getattr(self.root_element, 'Name', 'Unknown')
+                status["window_process"] = getattr(self.root_element, 'ProcessName', 'Unknown')
+                status["window_rect"] = list(self.get_window_rect())
+            except:
+                pass
+            
+            return status
+            
+        except Exception as e:
+            logger.error(f"Error getting status: {e}")
+            return {
+                "initialized": False,
+                "error": str(e)
+            }
