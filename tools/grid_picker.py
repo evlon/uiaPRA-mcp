@@ -870,6 +870,190 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
             }
     
     @mcp.tool()
+    async def highlight_window(
+        duration: float = 3.0,
+        color: str = 'blue',
+        thickness: int = 3
+    ) -> Dict[str, Any]:
+        """
+        高亮显示当前聚焦窗口的边框
+        
+        使用 tkinter 创建半透明覆盖层，在窗口周围绘制彩色边框。
+        用于确认当前扫描的目标窗口是否正确。
+        
+        Args:
+            duration: 高亮持续时间（秒），默认 3 秒
+            color: 边框颜色，支持 'red', 'green', 'blue', 'yellow', 'orange'
+            thickness: 边框厚度（像素），默认 3
+        
+        Returns:
+            {
+                "success": true,
+                "window": {
+                    "title": "微信",
+                    "process_name": "WeChat.exe",
+                    "rect": [100, 100, 800, 600]
+                },
+                "highlight_info": {
+                    "duration": 3.0,
+                    "color": "blue",
+                    "thickness": 3
+                }
+            }
+        
+        Example:
+            >>> # 设置聚焦窗口后高亮显示
+            >>> await set_focus_window(process_name="WeChat.exe")
+            >>> await highlight_window(duration=5.0, color='blue')
+        """
+        from core.screen_highlighter import highlight_element as highlight_by_element
+        from core.error_handler import ensure_scanner_initialized
+        
+        scanner, grid_manager = ensure_scanner_initialized(scanner_ref)
+        
+        try:
+            # 获取窗口元素
+            window_element = scanner.root_element
+            
+            # 获取位置
+            rect = window_element.BoundingRectangle
+            rect_tuple = (rect.left, rect.top, rect.right, rect.bottom)
+            
+            # 使用现有的高亮功能
+            highlight_by_element(window_element, duration=duration, color=color, follow=False)
+            
+            return {
+                "success": True,
+                "window": {
+                    "title": getattr(window_element, 'Name', ''),
+                    "process_name": getattr(window_element, 'ProcessName', ''),
+                    "rect": list(rect_tuple)
+                },
+                "highlight_info": {
+                    "duration": duration,
+                    "color": color,
+                    "thickness": thickness
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error highlighting window: {e}")
+            return {
+                "success": False,
+                "error": "HIGHLIGHT_WINDOW_ERROR",
+                "message": f"无法高亮窗口：{str(e)}",
+                "solution": "请确保已调用 set_focus_window() 设置目标窗口"
+            }
+    
+    @mcp.tool()
+    async def snapshot(
+        region: Optional[str] = None,
+        save_path: Optional[str] = None,
+        include_ui_overlay: bool = False
+    ) -> Dict[str, Any]:
+        """
+        截取当前屏幕或指定区域的截图
+        
+        用于调试和确认目标 UI 元素的位置。
+        
+        Args:
+            region: 可选，指定区域（如 "左上"、"中间"）
+                - 如果提供，只截取该宫格区域
+                - 否则截取整个窗口
+            save_path: 可选，保存路径
+                - 如果未提供，返回 base64 编码
+            include_ui_overlay: 是否包含 UI 元素标注覆盖层
+                - 启用时在元素周围绘制边框
+                - 需要额外的图像处理库
+        
+        Returns:
+            {
+                "success": true,
+                "image_base64": "data:image/png;base64,...",  # 如果未指定 save_path
+                "save_path": "/path/to/saved.png",  # 如果指定了 save_path
+                "region": "左上",  # 如果指定了 region
+                "rect": [100, 100, 800, 600],  # 截取的矩形区域
+                "timestamp": "2026-03-25T10:30:00",
+                "size": {"width": 700, "height": 500}
+            }
+        
+        Example:
+            >>> # 截取整个窗口
+            >>> result = await snapshot()
+            
+            >>> # 截取左侧区域并保存
+            >>> result = await snapshot(
+            ...     region="左侧",
+            ...     save_path="./screenshots/left_side.png"
+            ... )
+        """
+        import pyautogui
+        from datetime import datetime
+        import io
+        import base64
+        
+        scanner, grid_manager = ensure_scanner_initialized(scanner_ref)
+        
+        try:
+            # 确定截取区域
+            if region:
+                # 按宫格截取
+                grids = grid_manager.get_grids_by_region_description(region)
+                if not grids:
+                    return {
+                        "success": False,
+                        "error": "INVALID_REGION",
+                        "message": f"无效的区域：'{region}'"
+                    }
+                
+                # 计算合并矩形
+                all_rects = [g.to_tuple() for g in grids]
+                left = min(r[0] for r in all_rects)
+                top = min(r[1] for r in all_rects)
+                right = max(r[2] for r in all_rects)
+                bottom = max(r[3] for r in all_rects)
+                rect = (left, top, right, bottom)
+            else:
+                # 截取整个窗口
+                window_rect = scanner.get_window_rect()
+                rect = window_rect
+            
+            # 截图
+            screenshot = pyautogui.screenshot(region=rect[:4])  # left, top, width, height
+            
+            # 转换为 base64 或保存
+            if save_path:
+                screenshot.save(save_path)
+                image_data = None
+            else:
+                buffer = io.BytesIO()
+                screenshot.save(buffer, format='PNG')
+                img_str = base64.b64encode(buffer.getvalue()).decode()
+                image_data = f"data:image/png;base64,{img_str}"
+            
+            return {
+                "success": True,
+                "image_base64": image_data,
+                "save_path": save_path,
+                "region": region,
+                "rect": list(rect),
+                "timestamp": datetime.now().isoformat(),
+                "size": {
+                    "width": rect[2] - rect[0],
+                    "height": rect[3] - rect[1]
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error taking snapshot: {e}")
+            return {
+                "success": False,
+                "error": "SNAPSHOT_ERROR",
+                "message": f"无法截取屏幕：{str(e)}",
+                "solution": "请确保安装了 pyautogui 库 (pip install pyautogui)"
+            }
+    
+    @mcp.tool()
     async def highlight_element(
         selector_string: str,
         duration: float = 3.0,
