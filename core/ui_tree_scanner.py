@@ -1,6 +1,7 @@
 """
 UI 树扫描器
 获取完整的 UI 树，并按 9 宫格位置排序和去重
+添加严格的可见性过滤策略
 """
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -39,25 +40,37 @@ class UIElement:
 class UITreeScanner:
     """UI 树扫描器"""
     
-    def __init__(self, root_element, grid_manager):
+    def __init__(self, root_element, grid_manager, enable_visibility_filter: bool = True):
         """
         Args:
             root_element: UIA 根元素
             grid_manager: 宫格管理器（9 宫格）
+            enable_visibility_filter: 是否启用可见性过滤（默认 True）
         """
         self.root_element = root_element
         self.grid_manager = grid_manager
         self.all_elements: List[UIElement] = []
+        self.enable_visibility_filter = enable_visibility_filter
+        
+        # 初始化可见性检测器
+        if self.enable_visibility_filter:
+            try:
+                from core.visibility_checker import VisibilityChecker
+                self.visibility_checker = VisibilityChecker()
+                logger.info("Visibility filter enabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize visibility checker: {e}")
+                self.enable_visibility_filter = False
     
     def scan_full_tree(self, max_depth: int = 15) -> List[UIElement]:
         """
-        扫描完整的 UI 树
+        扫描完整的 UI 树（带可见性过滤）
         
         Args:
             max_depth: 最大搜索深度
         
         Returns:
-            所有 UI 元素的列表
+            所有可见 UI 元素的列表
         """
         self.all_elements = []
         
@@ -70,6 +83,18 @@ class UITreeScanner:
                 ui_elem = self._extract_element_info(element)
                 
                 if ui_elem:
+                    # 可见性检查（如果启用）
+                    if self.enable_visibility_filter:
+                        if hasattr(self, 'visibility_checker'):
+                            is_visible = self.visibility_checker.is_element_visible(element)
+                            if not is_visible:
+                                logger.debug(f"Filtered out invisible element: {ui_elem.name or 'Unknown'}")
+                                # 继续遍历子元素，因为父元素可能被遮挡但子元素可能可见
+                                children = element.GetChildren()
+                                for child in children:
+                                    traverse(child, depth + 1)
+                                return
+                    
                     # 计算所属宫格
                     self._assign_to_grid(ui_elem)
                     self.all_elements.append(ui_elem)
@@ -84,7 +109,11 @@ class UITreeScanner:
         
         traverse(self.root_element)
         
-        logger.info(f"Scanned {len(self.all_elements)} elements from UI tree")
+        if self.enable_visibility_filter:
+            logger.info(f"Scanned {len(self.all_elements)} visible elements from UI tree")
+        else:
+            logger.info(f"Scanned {len(self.all_elements)} elements from UI tree (visibility filter disabled)")
+        
         return self.all_elements
     
     def _extract_element_info(self, element) -> Optional[UIElement]:
