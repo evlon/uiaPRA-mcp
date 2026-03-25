@@ -819,9 +819,11 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 final_elements = element_dicts
                 filter_stats = None
             
-            # 构建返回结果
-            result = {
-                "success": True,
+            # 使用格式化工具构建响应
+            from core.result_formatter import format_tool_response, build_summary
+            
+            # 基础响应数据
+            base_data = {
                 "region_query": region if region else f"grid_{grid_id}",
                 "scanned_grids": [
                     {
@@ -830,20 +832,28 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                     }
                     for g in target_grids
                 ],
-                "element_count": len(element_dicts),
                 "search_depth": search_depth,
                 "use_ui_tree": use_ui_tree,
                 "visibility_filter_enabled": enable_visibility_filter,
-                "visibility_mode": visibility_mode if enable_visibility_filter else "off",
-                "elements": element_dicts[:30]  # 限制返回数量
+                "visibility_mode": visibility_mode if enable_visibility_filter else "off"
             }
             
             # 添加过滤统计
+            message = None
             if enable_visibility_filter and filter_stats:
-                result["visibility_filter_stats"] = filter_stats
-                result["message"] = f"Filtered out {filter_stats['filtered_out']} invisible elements (mode={visibility_mode})"
-            elif len(element_dicts) > 30:
-                result["message"] = f"Showing first 30 of {len(element_dicts)} elements"
+                base_data["visibility_filter_stats"] = filter_stats
+                message = f"Filtered out {filter_stats['filtered_out']} invisible elements (mode={visibility_mode})"
+            
+            # 使用格式化工具（自动添加 summary 和截断）
+            result = format_tool_response(
+                success=True,
+                data=base_data,
+                message=message,
+                elements=element_dicts,
+                include_summary=True,
+                auto_truncate=True,
+                max_elements=50  # 增加到 50 个
+            )
             
             return result
         
