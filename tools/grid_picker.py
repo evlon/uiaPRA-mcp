@@ -1,5 +1,7 @@
 """
 MCP 工具：宫格拾取器
+
+集成统一错误处理机制
 """
 from mcp.server.fastmcp import FastMCP
 from typing import Optional, Dict, Any, List
@@ -38,14 +40,15 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                     "rect": [100, 100, 500, 400]
                 },
                 "grid_info": {
-                    "rows": 4,
-                    "cols": 4,
-                    "total_grids": 16
+                    "rows": 3,
+                    "cols": 3,
+                    "total_grids": 9
                 }
             }
         """
         from core.uia_region_scanner import UIARegionScanner
         from core.grid_manager import GridManager
+        from core.error_handler import WindowNotFoundError, ensure_scanner_initialized
         
         try:
             # 创建新的扫描器
@@ -94,10 +97,17 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
         
         except Exception as e:
             logger.error(f"Error setting focus window: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            
+            # 使用统一的错误处理
+            from core.error_handler import WindowNotFoundError
+            
+            error = WindowNotFoundError(
+                process_name=process_name,
+                window_title=window_title,
+                message=f"无法找到窗口：{str(e)}",
+                details={"exception": str(e)}
+            )
+            return error.to_dict()
     
     @mcp.tool()
     async def pick_grid_element(
@@ -128,18 +138,21 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 }
             }
         """
-        scanner = scanner_ref.get('scanner')
-        grid_manager = scanner_ref.get('grid_manager')
+        from core.error_handler import ensure_scanner_initialized, GridNotFoundError
         
-        if not scanner or not grid_manager:
-            return {
-                "success": False,
-                "error": "Scanner not initialized. Call set_focus_window first."
-            }
+        # 确保扫描器已初始化
+        scanner, grid_manager = ensure_scanner_initialized(scanner_ref)
         
         try:
             # 获取宫格
-            grid = grid_manager.get_grid_by_id(grid_id)
+            try:
+                grid = grid_manager.get_grid_by_id(grid_id)
+            except ValueError as e:
+                raise GridNotFoundError(
+                    grid_id=grid_id,
+                    message=f"无效的宫格 ID {grid_id}: {str(e)}"
+                )
+            
             grid_rect = grid.to_tuple()
             
             # 扫描宫格
