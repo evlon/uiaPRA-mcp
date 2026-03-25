@@ -104,6 +104,11 @@ class FocusDiffusionScanner:
         """
         import time
         
+        # 安全检查：确保属性存在
+        if not hasattr(self, 'use_cv_prefilter'):
+            logger.warning("use_cv_prefilter attribute missing, using default False")
+            self.use_cv_prefilter = False
+        
         grids = self.grid_manager.get_all_grids()
         grid_rects = [grid.to_tuple() for grid in grids]
         

@@ -498,12 +498,46 @@ class UIARegionScanner:
         """
         扫描焦点区域（兼容 FocusDiffusionScanner 接口）
         
-        :param layers: 扫描层数（当前实现返回所有区域）
+        :param layers: 扫描层数（0=只焦点，1=焦点 + 相邻，2=全部）
         :return: {grid_id: elements}
         """
-        # 这是一个简化实现，返回空字典表示使用默认扫描
-        logger.debug(f"scan_focus_area called with layers={layers}")
-        return {}
+        from core.grid_manager import GridManager
+        
+        logger.info(f"scan_focus_area called with layers={layers}")
+        
+        # 获取窗口矩形
+        window_rect = self.get_window_rect()
+        if window_rect == (0, 0, 0, 0):
+            logger.warning("Window rect is invalid")
+            return {}
+        
+        # 创建宫格管理器（默认 3x3）
+        grid_manager = GridManager(window_rect, rows=3, cols=3)
+        
+        # 根据 layers 确定扫描范围
+        if layers == 0:
+            # 只扫描中心宫格
+            target_grid_ids = [4]  # 中心宫格 ID
+        elif layers == 1:
+            # 扫描全部 9 个宫格
+            target_grid_ids = list(range(9))
+        else:
+            # layers >= 2 也扫描全部
+            target_grid_ids = list(range(9))
+        
+        # 扫描每个宫格
+        results = {}
+        for grid_id in target_grid_ids:
+            try:
+                grid = grid_manager.get_grid_by_id(grid_id)
+                elements = self.scan_grid(grid.to_tuple())
+                results[grid_id] = elements
+                logger.debug(f"Grid {grid_id}: found {len(elements)} elements")
+            except Exception as e:
+                logger.debug(f"Error scanning grid {grid_id}: {e}")
+                results[grid_id] = []
+        
+        return results
     
     def get_status(self) -> Dict[str, Any]:
         """

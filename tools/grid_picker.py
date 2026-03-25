@@ -322,6 +322,20 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                     title = getattr(window, 'Name', '') or ''
                     proc_name = getattr(window, 'ProcessName', '') or ''
                     proc_id = getattr(window, 'ProcessId', 0)
+                    
+                    # 如果 ProcessName 为空，尝试从其他途径获取
+                    if not proc_name and proc_id:
+                        try:
+                            import psutil
+                            process = psutil.Process(proc_id)
+                            proc_name = process.name() or f"pid_{proc_id}"
+                        except Exception:
+                            # psutil 不可用或进程不存在，使用 PID 作为后备
+                            proc_name = f"pid_{proc_id}"
+                    elif not proc_name:
+                        # 完全没有进程信息
+                        proc_name = "unknown"
+                    
                     control_type = getattr(window, 'ControlTypeName', '')
                     automation_id = getattr(window, 'AutomationId', '')
                     

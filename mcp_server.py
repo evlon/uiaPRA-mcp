@@ -27,19 +27,21 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     name="uiaRPA-ui-scanner",
     instructions="""
-    uiaRPA-mcp 提供基于 uiautomation 的 UIA 元素查找能力。
+    uiaRPA-mcp 提供基于 uiautomation 的 UIA 元素查找和操作能力。
     
     核心特性:
     - 9 宫格分区域扫描
     - 语义化元素过滤
     - UI 树完整扫描
-    - 支持自然语言和 selector 语法两种查询方式
+    - 支持 selector 语法和结构化过滤
+    - 完整的元素操作接口（点击、输入、键盘控制）
     
     使用流程:
     1. 调用 set_focus_window 设置目标窗口
     2. 使用 get_ui_tree_data 获取 UI 树数据
-    3. 使用 filter_ui_elements 语义化过滤
-    4. 使用 highlight_element 高亮验证
+    3. 使用 filter_ui_elements 语义化过滤（推荐 LLM 自主生成过滤条件）
+    4. 使用 click_element / input_text 等执行操作
+    5. 使用 highlight_element 高亮验证
     """
 )
 
@@ -116,11 +118,14 @@ async def scan_all_grids(
         import time
         start_time = time.time()
         
-        # 创建扩散扫描器
+        # 创建扩散扫描器（完整初始化）
         diffusion_scanner = FocusDiffusionScanner.__new__(FocusDiffusionScanner)
         diffusion_scanner.scanner = scanner
         diffusion_scanner.grid_manager = scanner_state['grid_manager']
         diffusion_scanner.cache = scanner_state.get('cache', {})
+        diffusion_scanner.current_focus = 4  # 默认焦点为中心宫格
+        diffusion_scanner.use_cv_prefilter = False  # 默认不使用 CV 预筛选
+        diffusion_scanner.parallel_scan = True
         
         # 扫描
         if layers == 2 or force:
@@ -165,14 +170,14 @@ async def clear_cache() -> Dict[str, Any]:
 
 def register_all_tools():
     """注册所有工具"""
-    from tools.element_finder import register_element_finder
     from tools.selector_query import register_selector_query
     from tools.grid_picker import register_grid_picker
+    from tools.element_actions import register_element_actions
     
     # 注册工具
-    register_element_finder(mcp, scanner_state)
     register_selector_query(mcp, scanner_state)
     register_grid_picker(mcp, scanner_state)
+    register_element_actions(mcp, scanner_state)
 
 
 def main():

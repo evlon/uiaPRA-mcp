@@ -42,25 +42,22 @@ class VisibilityChecker:
         if mode == "off":
             self.checks = []
         elif mode == "balanced":
-            # 只检查关键项
+            # 平衡模式：只检查基本可见性（不检查 offscreen，避免 Qt/DirectUI 误判）
             self.checks = [
-                self._check_basic_visibility,
-                self._is_offscreen
+                self._check_basic_visibility
             ]
         elif mode == "strict":
-            # 全部检查
+            # 严格模式：检查离屏 + 前景层（但不检查像素覆盖，因为太慢）
             self.checks = [
                 self._check_basic_visibility,
                 self._is_offscreen,
-                self._check_pixel_coverage,
                 self._is_in_foreground_layer
             ]
         else:
             logger.warning(f"Unknown visibility mode '{mode}', using 'balanced'")
             self.mode = "balanced"
             self.checks = [
-                self._check_basic_visibility,
-                self._is_offscreen
+                self._check_basic_visibility
             ]
     
     def is_element_visible(self, element) -> bool:
@@ -76,21 +73,10 @@ class VisibilityChecker:
         if not element:
             return False
         
-        # 1. 检查基本可见性属性
-        if not self._check_basic_visibility(element):
-            return False
-        
-        # 2. 检查是否离屏
-        if self._is_offscreen(element):
-            return False
-        
-        # 3. 检查实际像素覆盖
-        if not self._check_pixel_coverage(element):
-            return False
-        
-        # 4. 检查是否在前景层
-        if not self._is_in_foreground_layer(element):
-            return False
+        # 根据模式执行对应的检查列表
+        for check_func in self.checks:
+            if not check_func(element):
+                return False
         
         return True
     
@@ -105,10 +91,13 @@ class VisibilityChecker:
             True 如果基本可见性通过
         """
         try:
+            self.filter_stats["total_checked"] += 1
+            
             # 检查 IsOffscreen 属性
             if hasattr(element, 'IsOffscreen'):
                 if element.IsOffscreen:
                     logger.debug(f"Element is offscreen: {self._get_element_name(element)}")
+                    self.filter_stats["failed_basic_visibility"] += 1
                     return False
             
             # 检查 IsEnabled 属性
@@ -133,6 +122,8 @@ class VisibilityChecker:
         """
         检查元素是否离屏（不在屏幕上显示）
         
+        注意：Qt/DirectUI 应用的 IsOffscreen 属性经常误报，所以主要依赖矩形检查。
+        
         Args:
             element: UIA 元素对象
         
@@ -140,11 +131,7 @@ class VisibilityChecker:
             True 如果元素离屏
         """
         try:
-            # 方法 1: 使用 IsOffscreen 属性
-            if hasattr(element, 'IsOffscreen'):
-                return bool(element.IsOffscreen)
-            
-            # 方法 2: 检查边界矩形
+            # 方法 1: 检查边界矩形（优先，可靠）
             rect = self._get_bounding_rectangle(element)
             if not rect:
                 return True
@@ -155,8 +142,21 @@ class VisibilityChecker:
                 rect.left >= screen_rect[2] or
                 rect.bottom <= screen_rect[1] or
                 rect.top >= screen_rect[3]):
-                logger.debug(f"Element is completely offscreen: {self._get_element_name(element)}")
+                self.filter_stats["failed_offscreen"] += 1
+                logger.debug(f"Element is completely offscreen (by rect): {self._get_element_name(element)}")
                 return True
+            
+            # 方法 2: IsOffscreen 属性（仅作为参考，因为 Qt/DirectUI 经常误报）
+            # 只有当矩形在屏幕内但 IsOffscreen=True 时才拒绝
+            if hasattr(element, 'IsOffscreen'):
+                result = bool(element.IsOffscreen)
+                if result:
+                    # 对于 Qt/DirectUI，即使 IsOffscreen=True，只要矩形在屏幕内就认为可见
+                    # 这里选择相信矩形检查结果
+                    logger.debug(f"Element IsOffscreen=True but rect is onscreen, ignoring: {self._get_element_name(element)}")
+                    # 仍然统计但返回 False（认为可见）
+                    self.filter_stats["failed_offscreen"] += 1
+                    return False  # 不拒绝
             
             return False
             
@@ -178,6 +178,7 @@ class VisibilityChecker:
         try:
             rect = self._get_bounding_rectangle(element)
             if not rect:
+                self.filter_stats["failed_pixel_coverage"] += 1
                 return False
             
             # 获取元素中心点
@@ -191,6 +192,7 @@ class VisibilityChecker:
                 # 尝试检查 clickable 区域（通常是元素的 80% 中心区域）
                 clickable_rect = self._shrink_rect(rect, 0.8)
                 if not self._rect_is_visible(clickable_rect, element):
+                    self.filter_stats["failed_pixel_coverage"] += 1
                     return False
             
             return True
@@ -213,10 +215,12 @@ class VisibilityChecker:
             # 获取元素所在窗口
             window = self._get_parent_window(element)
             if not window:
+                self.filter_stats["failed_foreground_layer"] += 1
                 return False
             
             # 检查窗口是否是最顶层窗口
             if not self._is_topmost_window(window):
+                self.filter_stats["failed_foreground_layer"] += 1
                 logger.debug(f"Element's window is not topmost: {self._get_element_name(element)}")
                 return False
             
@@ -414,6 +418,7 @@ class VisibilityChecker:
         for elem in elements:
             if self.is_element_visible(elem):
                 visible.append(elem)
+                self.filter_stats["passed_visibility"] += 1
             else:
                 logger.debug(f"Filtered out invisible element: {self._get_element_name(elem)}")
         
