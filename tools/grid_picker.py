@@ -110,6 +110,160 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
             return error.to_dict()
     
     @mcp.tool()
+    async def list_windows(
+        process_name: Optional[str] = None,
+        window_title_pattern: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        列出所有可用的窗口供选择
+        
+        扫描当前系统中的所有窗口，支持按进程名或窗口标题过滤。
+        当 set_focus_window() 找不到窗口时，可使用此函数查看可用窗口列表。
+        
+        Args:
+            process_name: 可选，按进程名过滤（如 "WeChat.exe"）
+                - 支持部分匹配（如 "WeChat" 匹配 "WeChat.exe"）
+                - 不区分大小写
+            window_title_pattern: 可选，按窗口标题正则匹配
+                - 使用 Python re 模块进行正则匹配
+                - 支持模糊搜索（如 "微信" 匹配包含"微信"的标题）
+        
+        Returns:
+            {
+                "success": True,
+                "windows": [
+                    {
+                        "window_id": "hwnd_12345",
+                        "process_name": "WeChat.exe",
+                        "process_id": 8888,
+                        "title": "微信",
+                        "rect": [100, 100, 800, 600],
+                        "width": 700,
+                        "height": 500,
+                        "is_visible": True,
+                        "is_topmost": False,
+                        "control_type": "WindowControl",
+                        "automation_id": ""
+                    },
+                    ...
+                ],
+                "total_count": 5,
+                "filtered_by": {
+                    "process_name": "WeChat.exe",
+                    "window_title_pattern": null
+                },
+                "message": "找到 5 个窗口"
+            }
+        
+        Example:
+            >>> # 列出所有窗口
+            >>> await list_windows()
+            
+            >>> # 只列出微信相关窗口
+            >>> await list_windows(process_name="WeChat")
+            
+            >>> # 使用正则匹配标题
+            >>> await list_windows(window_title_pattern=".*聊天.*")
+        """
+        import uiautomation as auto
+        import re
+        from core.error_handler import handle_mcp_errors
+        
+        try:
+            # 获取桌面根元素
+            desktop = auto.GetRootControl()
+            
+            # 获取所有一级子元素（顶级窗口）
+            all_windows = desktop.GetChildren()
+            
+            windows = []
+            for window in all_windows:
+                try:
+                    # 获取窗口信息
+                    title = getattr(window, 'Name', '') or ''
+                    proc_name = getattr(window, 'ProcessName', '') or ''
+                    proc_id = getattr(window, 'ProcessId', 0)
+                    control_type = getattr(window, 'ControlTypeName', '')
+                    automation_id = getattr(window, 'AutomationId', '')
+                    
+                    # 获取矩形
+                    try:
+                        rect = window.BoundingRectangle
+                        rect_tuple = (rect.left, rect.top, rect.right, rect.bottom)
+                        width = rect.right - rect.left
+                        height = rect.bottom - rect.top
+                    except:
+                        rect_tuple = [0, 0, 0, 0]
+                        width = 0
+                        height = 0
+                    
+                    # 应用过滤器
+                    if process_name:
+                        if process_name.lower() not in proc_name.lower():
+                            continue
+                    
+                    if window_title_pattern:
+                        if not re.search(window_title_pattern, title, re.IGNORECASE):
+                            continue
+                    
+                    # 检查是否可见
+                    is_visible = width > 0 and height > 0
+                    
+                    # 检查是否最顶层
+                    is_topmost = False
+                    try:
+                        hwnd = window.NativeWindowHandle
+                        if hwnd:
+                            import ctypes
+                            style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+                            is_topmost = bool(style & 0x00000008)  # WS_EX_TOPMOST
+                    except:
+                        pass
+                    
+                    window_info = {
+                        "window_id": f"hwnd_{proc_id}_{id(window)}",
+                        "process_name": proc_name,
+                        "process_id": proc_id,
+                        "title": title,
+                        "rect": list(rect_tuple),
+                        "width": width,
+                        "height": height,
+                        "is_visible": is_visible,
+                        "is_topmost": is_topmost,
+                        "control_type": control_type,
+                        "automation_id": automation_id
+                    }
+                    
+                    windows.append(window_info)
+                    
+                except Exception as e:
+                    logger.debug(f"Error processing window: {e}")
+                    continue
+            
+            # 按进程名和标题排序
+            windows.sort(key=lambda w: (w['process_name'], w['title']))
+            
+            return {
+                "success": True,
+                "windows": windows,
+                "total_count": len(windows),
+                "filtered_by": {
+                    "process_name": process_name,
+                    "window_title_pattern": window_title_pattern
+                },
+                "message": f"找到 {len(windows)} 个窗口"
+            }
+        
+        except Exception as e:
+            logger.error(f"Error listing windows: {e}")
+            return {
+                "success": False,
+                "error": "WINDOW_LIST_ERROR",
+                "message": f"无法获取窗口列表：{str(e)}",
+                "solution": "请确保有足够的权限访问系统窗口"
+            }
+    
+    @mcp.tool()
     async def pick_grid_element(
         grid_id: int,
         element_index: int = 0,
