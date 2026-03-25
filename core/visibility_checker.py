@@ -12,13 +12,56 @@ logger = logging.getLogger(__name__)
 class VisibilityChecker:
     """可见性检测器"""
     
-    def __init__(self):
-        """初始化可见性检测器"""
+    def __init__(self, mode: str = "balanced"):
+        """
+        初始化可见性检测器
+        
+        Args:
+            mode: 过滤模式
+                - "off": 不过滤（返回所有元素）
+                - "balanced": 平衡模式（默认，只检查基本可见性和离屏）
+                - "strict": 严格模式（4 层检查全开）
+        """
+        self.mode = mode
+        self.filter_stats = {
+            "total_checked": 0,
+            "passed_visibility": 0,
+            "failed_basic_visibility": 0,
+            "failed_offscreen": 0,
+            "failed_pixel_coverage": 0,
+            "failed_foreground_layer": 0
+        }
+        
         try:
             import uiautomation as auto
             self.auto = auto
         except ImportError as e:
             raise ImportError(f"Please install uiautomation: {e}")
+        
+        # 根据模式设置检查列表
+        if mode == "off":
+            self.checks = []
+        elif mode == "balanced":
+            # 只检查关键项
+            self.checks = [
+                self._check_basic_visibility,
+                self._is_offscreen
+            ]
+        elif mode == "strict":
+            # 全部检查
+            self.checks = [
+                self._check_basic_visibility,
+                self._is_offscreen,
+                self._check_pixel_coverage,
+                self._is_in_foreground_layer
+            ]
+        else:
+            logger.warning(f"Unknown visibility mode '{mode}', using 'balanced'")
+            self.mode = "balanced"
+            self.checks = [
+                self._check_basic_visibility,
+                self._is_offscreen
+            ]
     
     def is_element_visible(self, element) -> bool:
         """
@@ -374,8 +417,31 @@ class VisibilityChecker:
             else:
                 logger.debug(f"Filtered out invisible element: {self._get_element_name(elem)}")
         
-        logger.info(f"Visibility filter: {len(visible)}/{len(elements)} elements visible")
+        logger.info(f"Visibility filter ({self.mode}): {len(visible)}/{len(elements)} elements visible")
         return visible
+    
+    def get_filter_statistics(self) -> Dict[str, Any]:
+        """
+        获取过滤统计信息
+        
+        Returns:
+            统计数据字典
+        """
+        return {
+            "mode": self.mode,
+            **self.filter_stats
+        }
+    
+    def reset_statistics(self):
+        """重置统计信息"""
+        self.filter_stats = {
+            "total_checked": 0,
+            "passed_visibility": 0,
+            "failed_basic_visibility": 0,
+            "failed_offscreen": 0,
+            "failed_pixel_coverage": 0,
+            "failed_foreground_layer": 0
+        }
 
 
 # 便捷函数

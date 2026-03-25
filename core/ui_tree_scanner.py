@@ -40,27 +40,33 @@ class UIElement:
 class UITreeScanner:
     """UI 树扫描器"""
     
-    def __init__(self, root_element, grid_manager, enable_visibility_filter: bool = True):
+    def __init__(self, root_element, grid_manager, enable_visibility_filter: bool = True, visibility_mode: str = "balanced"):
         """
         Args:
             root_element: UIA 根元素
             grid_manager: 宫格管理器（9 宫格）
             enable_visibility_filter: 是否启用可见性过滤（默认 True）
+            visibility_mode: 可见性过滤模式
+                - "off": 不过滤
+                - "balanced": 平衡模式（默认，只检查基本可见性和离屏）
+                - "strict": 严格模式（4 层检查全开）
         """
         self.root_element = root_element
         self.grid_manager = grid_manager
         self.all_elements: List[UIElement] = []
         self.enable_visibility_filter = enable_visibility_filter
+        self.visibility_mode = visibility_mode if enable_visibility_filter else "off"
         
         # 初始化可见性检测器
         if self.enable_visibility_filter:
             try:
                 from core.visibility_checker import VisibilityChecker
-                self.visibility_checker = VisibilityChecker()
-                logger.info("Visibility filter enabled")
+                self.visibility_checker = VisibilityChecker(mode=self.visibility_mode)
+                logger.info(f"Visibility filter enabled (mode={self.visibility_mode})")
             except Exception as e:
                 logger.warning(f"Failed to initialize visibility checker: {e}")
                 self.enable_visibility_filter = False
+                self.visibility_mode = "off"
     
     def scan_full_tree(self, max_depth: int = 15) -> List[UIElement]:
         """
@@ -73,6 +79,10 @@ class UITreeScanner:
             所有可见 UI 元素的列表
         """
         self.all_elements = []
+        
+        # 重置过滤统计
+        if self.enable_visibility_filter and hasattr(self, 'visibility_checker'):
+            self.visibility_checker.reset_statistics()
         
         def traverse(element, depth=0):
             if depth > max_depth:
@@ -110,11 +120,38 @@ class UITreeScanner:
         traverse(self.root_element)
         
         if self.enable_visibility_filter:
-            logger.info(f"Scanned {len(self.all_elements)} visible elements from UI tree")
+            stats = self.get_visibility_filter_stats()
+            logger.info(f"Scanned {len(self.all_elements)} visible elements from UI tree (mode={self.visibility_mode}, filtered={stats['filtered_out']})")
         else:
             logger.info(f"Scanned {len(self.all_elements)} elements from UI tree (visibility filter disabled)")
         
         return self.all_elements
+    
+    def get_visibility_filter_stats(self) -> Dict[str, Any]:
+        """
+        获取可见性过滤统计信息
+        
+        Returns:
+            统计数据字典
+        """
+        if self.enable_visibility_filter and hasattr(self, 'visibility_checker'):
+            stats = self.visibility_checker.get_filter_statistics()
+            total_checked = stats.get('total_checked', 0)
+            passed = stats.get('passed_visibility', 0)
+            return {
+                "mode": stats["mode"],
+                "total_checked": total_checked,
+                "passed_visibility": passed,
+                "filtered_out": total_checked - passed,
+                "details": stats
+            }
+        return {
+            "mode": "off",
+            "total_checked": 0,
+            "passed_visibility": 0,
+            "filtered_out": 0,
+            "details": {}
+        }
     
     def _extract_element_info(self, element) -> Optional[UIElement]:
         """提取元素信息"""

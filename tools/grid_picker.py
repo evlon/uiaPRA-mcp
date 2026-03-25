@@ -289,13 +289,14 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
         min_width: int = 0,
         min_height: int = 0,
         sort_by: str = 'name',
-        enable_visibility_filter: bool = True
+        enable_visibility_filter: bool = True,
+        visibility_mode: str = "balanced"  # 新增参数
     ) -> Dict[str, Any]:
         """
         语义化过滤 UI 元素
         
         根据自然语言描述的条件筛选元素，支持多种过滤条件组合。
-        默认启用严格的可见性过滤，确保只返回用户肉眼可见的元素。
+        默认启用可见性过滤（平衡模式），确保只返回用户肉眼可见的元素。
         
         Args:
             grid_positions: 网格位置列表，如 ['左上', '左中', '左下']
@@ -308,6 +309,10 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 - 启用时会排除被其他窗口、对话框、控件遮挡的元素
                 - 检查元素的核心交互区域是否暴露在前景层
                 - 适用于"点击左边按钮"等需要精确匹配可见元素的场景
+            visibility_mode: 可见性过滤模式，默认 "balanced"
+                - "off": 不过滤
+                - "balanced": 平衡模式（推荐）
+                - "strict": 严格模式（可能过滤过严）
         
         Returns:
             过滤后的元素列表和统计信息
@@ -319,6 +324,9 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
             ...     name_contains='搜',
             ...     control_types=['ButtonControl']
             ... )
+            
+            >>> # 使用严格模式
+            >>> filter_ui_elements(name_contains='菜单', visibility_mode="strict")
             
             >>> # 禁用可见性过滤，获取所有匹配元素（包括被遮挡的）
             >>> filter_ui_elements(name_contains='菜单', enable_visibility_filter=False)
@@ -340,7 +348,8 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
             ui_scanner = UITreeScanner(
                 scanner.root_element, 
                 grid_manager,
-                enable_visibility_filter=enable_visibility_filter
+                enable_visibility_filter=enable_visibility_filter,
+                visibility_mode=visibility_mode
             )
             ui_scanner.scan_full_tree(max_depth=15)
             all_elements = ui_scanner.get_sorted_elements(deduplicate=False)
@@ -375,6 +384,11 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
             
             stats = semantic_filter.get_statistics()
             stats['visibility_filter_enabled'] = enable_visibility_filter
+            stats['visibility_mode'] = visibility_mode if enable_visibility_filter else "off"
+            
+            # 添加过滤统计
+            if enable_visibility_filter:
+                stats['filter_statistics'] = ui_scanner.get_visibility_filter_stats()
             
             return {
                 "success": True,
@@ -384,7 +398,8 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                     "control_types": control_types,
                     "min_size": f"{min_width}x{min_height}",
                     "sort_by": sort_by,
-                    "visibility_filter": enable_visibility_filter
+                    "visibility_filter": enable_visibility_filter,
+                    "visibility_mode": visibility_mode
                 },
                 "result_count": len(results),
                 "statistics": stats,
@@ -502,13 +517,14 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
         grid_id: int = None,
         search_depth: int = 2,
         use_ui_tree: bool = True,  # 使用 UI 树扫描
-        enable_visibility_filter: bool = True  # 启用可见性过滤
+        enable_visibility_filter: bool = True,  # 启用可见性过滤
+        visibility_mode: str = "balanced"  # 新增：过滤模式
     ) -> Dict[str, Any]:
         """
         扫描指定区域的 UI 元素
         
         支持自然语言方位描述（左上、中间、右下等）或宫格编号。
-        默认使用 9 宫格布局，并启用严格的可见性过滤。
+        默认使用 9 宫格布局，并启用可见性过滤（平衡模式）。
         
         Args:
             region: 自然语言方位描述，如 '左上'、'中间'、'右下'、'上面'、'左侧' 等
@@ -519,6 +535,10 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 - 启用时排除被遮挡、离屏、不在前景层的元素
                 - 确保"左边的按钮"等指令只匹配用户肉眼可见的元素
                 - 特别适用于微信等复杂应用，避免误选中被侧边栏遮挡的后台元素
+            visibility_mode: 可见性过滤模式，默认 "balanced"
+                - "off": 不过滤
+                - "balanced": 平衡模式（推荐）
+                - "strict": 严格模式（可能过滤过严）
         
         Returns:
             区域内的元素列表和统计信息
@@ -542,6 +562,9 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 "element_count": 8,
                 "elements": [...]
             }
+            
+            >>> # 使用严格模式
+            >>> scan_region(region="左侧", visibility_mode="strict")
             
             >>> # 禁用可见性过滤，获取所有元素（包括被遮挡的）
             >>> scan_region(region="左侧", enable_visibility_filter=False)
@@ -593,16 +616,13 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 ui_scanner = UITreeScanner(
                     scanner.root_element, 
                     grid_manager,
-                    enable_visibility_filter=enable_visibility_filter
+                    enable_visibility_filter=enable_visibility_filter,
+                    visibility_mode=visibility_mode
                 )
-                all_ui_elements = ui_scanner.scan_full_tree(max_depth=search_depth + 10)
+                ui_scanner.scan_full_tree(max_depth=search_depth + 10)
                 
                 # 过滤出目标宫格的元素
                 target_grid_ids = {g.id for g in target_grids}
-                filtered_elements = [
-                    e for e in all_ui_elements 
-                    if e.grid_id in target_grid_ids
-                ]
                 
                 # 去重
                 sorted_elements = ui_scanner.get_sorted_elements(deduplicate=True)
@@ -613,6 +633,9 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 
                 # 转换为字典格式
                 element_dicts = [e.to_dict() for e in final_elements]
+                
+                # 获取过滤统计
+                filter_stats = ui_scanner.get_visibility_filter_stats() if enable_visibility_filter else None
                 
             else:
                 # 旧方法：scan_grid
@@ -627,6 +650,7 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 
                 element_dicts = all_elements
                 final_elements = element_dicts
+                filter_stats = None
             
             # 构建返回结果
             result = {
@@ -643,11 +667,16 @@ def register_grid_picker(mcp: FastMCP, scanner_ref: dict):
                 "search_depth": search_depth,
                 "use_ui_tree": use_ui_tree,
                 "visibility_filter_enabled": enable_visibility_filter,
+                "visibility_mode": visibility_mode if enable_visibility_filter else "off",
                 "elements": element_dicts[:30]  # 限制返回数量
             }
             
-            if len(element_dicts) > 30:
-                result["message"] = f"Showing first 30 of {len(element_dicts)} elements{' (visibility filtered)' if enable_visibility_filter else ''}"
+            # 添加过滤统计
+            if enable_visibility_filter and filter_stats:
+                result["visibility_filter_stats"] = filter_stats
+                result["message"] = f"Filtered out {filter_stats['filtered_out']} invisible elements (mode={visibility_mode})"
+            elif len(element_dicts) > 30:
+                result["message"] = f"Showing first 30 of {len(element_dicts)} elements"
             
             return result
         
